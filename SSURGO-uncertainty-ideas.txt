@@ -1,0 +1,10 @@
+There are three forms of uncertainty available, the first two require no additional "work":
+
+1. The low-RV-high notation used to describe the range for most soil properties. Useful, but somewhat problematic because up until very recently the terms "low", "RV", and "high" haven't been tied to any specific definition.
+
+2. Components: you can derive "ranges" by selecting different components within a map unit; within a simulation framework (e.g. bootstrapping) you can generate range in expected soil behavior or capacity. For example, randomly select a component using the component percentage as the expected probability, run your model, then do it again—1,000 times or more. Aggregate over the results to generate expected ranges using percentiles or your favorite metrics of central tendency and spread.
+
+3. When components are named for a soil series, it is possible to use KSSL data (if available) to generated expected ranges in soil properties. This requires extra effort and won't work at all if there aren't enough pedon / lab data available.
+
+
+In summary: it depends on the scale and questions being asked. We need to have many "paths to" the same underlying data so that we can direct people accordingly.
