@@ -1,0 +1,590 @@
+---
+title: "SOC Stocks via Soil Data Access"
+# subtitle: "gSSURGO components"
+date: "`r Sys.Date()`"
+
+fig-format: svg
+code-overflow: wrap
+code-block-bg: "#F7F7F7"
+fig-align: "center"
+fontsize: 10pt
+
+format:
+    html: 
+      embed-resources: true
+      grid: 
+        margin-width: 350px
+reference-location: margin
+citation-location: margin
+# bibliography: skeleton.bib
+---
+
+# Introduction
+
+$$
+\begin{eqnarray*}
+\small{\frac{kg}{m^{2}}} &        & \small{mass~fraction} & & \small{\frac{g}{cm^{3}}} & & cm
+\\
+SOC_{stock}      & = \sum & soc   & \times                & D_{b} & \times & thick
+\end{eqnarray*}
+$$
+
+
+$$
+SOC~~\frac{kg}{m^{2}} = \sum_{n}^{i = 1} D_{b}
+$$
+
+
+
+```{r}
+#| fig-width: 4
+#| fig-height: 6
+#| warning: false
+
+
+library(aqp)
+library(sharpshootR)
+library(venn)
+library(lattice)
+library(tactile)
+library(latticeExtra)
+library(reshape2)
+
+# template
+x <- list(
+  id = 'P',
+  depths = c(15, 25, 35, 70, 100, 150),
+  name = c('Ap', 'AB', 'E', 'Bt', 'BC', 'C'),
+  m = NA
+)
+
+s <- quickSPC(x)
+
+par(mar = c(0, 0, 0, 3))
+plotSPC(s, name.style = 'center-center', cex.names = 1, lwd = 0.5)
+```
+
+```{r}
+#| fig-width: 6
+#| fig-height: 6
+#| warning: false
+
+## simulate soil colors
+data("soil_minerals")
+
+quartz <- soil_minerals$color[soil_minerals$mineral == 'quartz']
+hematite <- soil_minerals$color[soil_minerals$mineral == 'hematite-fine']
+humus <- soil_minerals$color[soil_minerals$mineral == 'humus']
+
+
+chips <- c(quartz, hematite, humus)
+w <- c(10, 1, 5)
+
+plural <- ifelse(w > 1, 's', '')
+names(chips) <- sprintf(
+  fmt = "%s part%s\n%s", 
+  w, 
+  plural, 
+  c('quartz', 'hematite', 'humus')
+)
+
+
+# par(cex = 1.5)
+colorMixtureVenn(chips, w = w, mixingMethod = 'exact', names = TRUE)
+```
+
+```{r}
+#| fig-width: 4
+#| fig-height: 6
+
+# Ap
+w <- c(5, 1, 20)
+s$m[1] <- mixMunsell(chips, w = w, mixingMethod = 'exact')$munsell
+
+# AB
+w <- c(10, 2, 15)
+s$m[2] <- mixMunsell(chips, w = w, mixingMethod = 'exact')$munsell
+
+# E
+w <- c(30, 0.1, 1)
+s$m[3] <- mixMunsell(chips, w = w, mixingMethod = 'exact')$munsell
+
+# Bt
+w <- c(5, 15, 15)
+s$m[4] <- mixMunsell(chips, w = w, mixingMethod = 'exact')$munsell
+
+# BC
+w <- c(5, 4, 5)
+s$m[5] <- mixMunsell(chips, w = w, mixingMethod = 'exact')$munsell
+
+# C
+w <- c(20, 2, 5)
+s$m[6] <- mixMunsell(chips, w = w, mixingMethod = 'exact')$munsell
+
+s$soil_color <- parseMunsell(s$m)
+
+par(mar = c(0, 0, 0, 3))
+plotSPC(s, name.style = 'center-center', cex.names = 1, lwd = 0.5)
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+# horizon boundary transition distances
+s$hzd <- c(0.5, 2, 1, 5, 10, 10)
+
+## run simulation
+set.seed(101010)
+x <- perturb(s, id = sprintf("sim:%0.3d", 1:100), boundary.attr = 'hzd', min.thickness = 8)
+
+par(mar = c(0, 0, 0, 3))
+
+# first 10 profiles
+plotSPC(x[1:10, ], name.style = 'center-center', cex.names = 0.9, width = 0.33, max.depth = 150, lwd = 0.5, cex.id = 00.8, hz.distinctness.offset = 'hzd')
+```
+
+
+```{r}
+# init columns to store simulated values
+horizons(x)$soc <- NA
+horizons(x)$Db <- NA
+horizons(x)$m.sim <- NA
+horizons(x)$fragvol <- NA
+
+
+
+# https://msalganik.wordpress.com/2017/01/21/making-sense-of-the-rlnorm-function-in-r/comment-page-1/
+# make rlnorm() simpler to parameterize
+# m: arithmetic mean
+# s: standard deviation
+rlnorm.helper <- function(n, m, s) {
+  location <- log(m^2 / sqrt(s^2 + m^2))
+  shape <- sqrt(log(1 + (s^2 / m^2)))
+  rlnorm(n, location, shape)
+}
+
+
+
+z <- profileApply(x, FUN = function(i) {
+  
+  ## organic carbon mass percent (log-normal distribution)
+  # Ap
+  i$soc[1] <- rlnorm.helper(n = 1, m = 4, s = 1)
+  # AB
+  i$soc[2] <- rlnorm.helper(n = 1, m = 2, s = 1.3)
+  # E
+  i$soc[3] <- rlnorm.helper(n = 1, m = 0.1, s = 0.1)
+  # Bt
+  i$soc[4] <- rlnorm.helper(n = 1, m = 0.2, s = 0.1)
+  # BC
+  i$soc[5] <- rlnorm.helper(n = 1, m = 0.1, s = 0.05)
+  # C
+  i$soc[6] <- rlnorm.helper(n = 1, m = 0.01, s = 0.05)
+  
+  ## bulk density (g/cm^3)
+  # Ap
+  i$Db[1] <- rnorm(n = 1, mean = 1.5, sd = 0.15)
+  # AB
+  i$Db[2] <- rnorm(n = 1, mean = 1.3, sd = 0.15)
+  # E
+  i$Db[3] <- rnorm(n = 1, mean = 1.8, sd = 0.1)
+  # Bt
+  i$Db[4] <- rnorm(n = 1, mean = 1.7, sd = 0.05)
+  # BC
+  i$Db[5] <- rnorm(n = 1, mean = 1.9, sd = 0.05)
+  # C
+  i$Db[6] <- rnorm(n = 1, mean = 2.0, sd = 0.05)
+  
+  ## rock fragment volume percent (log-normal distribution)
+  # Ap
+  i$fragvol[1] <- rlnorm.helper(n = 1, m = 5, s = 1)
+  # AB
+  i$fragvol[2] <- rlnorm.helper(n = 1, m = 5, s = 1.3)
+  # E
+  i$fragvol[3] <- rlnorm.helper(n = 1, m = 10, s = 1.8)
+  # Bt
+  i$fragvol[4] <- rlnorm.helper(n = 1, m = 12, s = 3)
+  # BC
+  i$fragvol[5] <- rlnorm.helper(n = 1, m = 15, s = 5)
+  # C
+  i$fragvol[6] <- rlnorm.helper(n = 1, m = 5, s = 1)
+  
+  return(i)
+})
+
+
+## list of SPC -> SPC
+z <- combine(z)
+```
+
+```{r}
+## compute hz and profile level stocks
+
+
+# SOC stock by horizon = thick (cm) * Db 1/3 bar (g/cm^3) * (soil fraction) * SOC (%) * conversion factor (10)
+z$thick <- z$bottom - z$top
+
+z$stock <- z$thick * z$Db * (1 - (z$fragvol / 100)) * (z$soc / 100) * 10
+
+
+z$stock.csum <- profileApply(z, function(i) {
+  cumsum(i$stock)
+})
+
+z$SOC.stock <- profileApply(z, function(i) {
+  sum(i$stock)
+})
+
+
+# check
+quantile(z$soc)
+quantile(z$Db)
+quantile(z$fragvol)
+quantile(z$stock)
+quantile(z$stock.csum)
+quantile(z$SOC.stock)
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+## partial view
+
+zz <- z[1:10, ]
+o <- order(zz$SOC.stock)
+
+par(mar = c(4.5, 0, 0, 2.5))
+plotSPC(zz, name.style = 'center-center', cex.names = 0.85, width = 0.33, max.depth = 150, plot.order = o, lwd = 0.5, hz.distinctness.offset = 'hzd')
+
+axis(side = 1, at = 1:length(zz), labels = round(zz$SOC.stock[o], 1), line = 0.25)
+mtext('SOC Stock (kg / m^2)', side = 1, line = 2.5, font = 2, cex = 1)
+
+
+par(mar = c(4.5, 0, 3, 2.5))
+plotSPC(zz, name.style = 'center-center', cex.names = 0.85, width = 0.33, max.depth = 150, color = 'soc', plot.order = o, col.label = 'SOC Concentration (%)', lwd = 0.5, hz.distinctness.offset = 'hzd')
+
+axis(side = 1, at = 1:length(zz), labels = round(zz$SOC.stock[o], 1), line = 0.25)
+mtext('SOC Stock (kg / m^2)', side = 1, line = 2.5, font = 2, cex = 1)
+
+
+plotSPC(zz, name.style = 'center-center', cex.names = 0.85, width = 0.33, max.depth = 150, color = 'Db', plot.order = o, col.label = 'Bulk Density (g/cm^3)', lwd = 0.5, hz.distinctness.offset = 'hzd')
+
+axis(side = 1, at = 1:length(zz), labels = round(zz$SOC.stock[o], 1), line = 0.25)
+mtext('SOC Stock (kg / m^2)', side = 1, line = 2.5, font = 2, cex = 1)
+
+plotSPC(zz, name.style = 'center-center', cex.names = 0.85, width = 0.33, max.depth = 150, color = 'fragvol', plot.order = o, col.label = 'Rock Fragment Volume (%)', lwd = 0.5, hz.distinctness.offset = 'hzd')
+
+axis(side = 1, at = 1:length(zz), labels = round(zz$SOC.stock[o], 1), line = 0.25)
+mtext('SOC Stock (kg / m^2)', side = 1, line = 2.5, font = 2, cex = 1)
+
+
+plotSPC(zz, name.style = 'center-center', cex.names = 0.85, width = 0.33, max.depth = 150, color = 'stock', plot.order = o, col.label = 'SOC Stock (kg C / m^2)', lwd = 0.5, hz.distinctness.offset = 'hzd')
+
+axis(side = 1, at = 1:length(zz), labels = round(zz$SOC.stock[o], 1), line = 0.25)
+mtext('SOC Stock (kg / m^2)', side = 1, line = 2.5, font = 2, cex = 1)
+
+
+
+plotSPC(zz, name.style = 'center-center', cex.names = 0.85, width = 0.33, max.depth = 150, color = 'stock.csum', plot.order = o, col.label = 'Cumulative SOC Stock (kg C / m^2)', lwd = 0.5, hz.distinctness.offset = 'hzd')
+
+axis(side = 1, at = 1:length(zz), labels = round(zz$SOC.stock[o], 1), line = 0.25)
+mtext('SOC Stock (kg / m^2)', side = 1, line = 2.5, font = 2, cex = 1)
+```
+
+
+```{r}
+#| fig-width: 11
+#| fig-height: 8
+## slices
+
+# truncate 0-50cm
+zz.sliced <- trunc(zz, 0, 50)
+
+# dice into 1-cm slices
+zz.sliced <- dice(zz.sliced)
+
+# remove the effect of thickness, working on 1-cm slices
+zz.sliced$stock.csum <- profileApply(zz.sliced, function(i) {
+  cumsum(i$stock / i$thick)
+})
+
+# remove the effect of thickness, working on 1-cm slices
+zz.sliced$SOC.stock <- profileApply(zz.sliced, function(i) {
+  sum(i$stock / i$thick)
+})
+
+o <- order(zz.sliced$SOC.stock)
+
+par(mar = c(4.5, 0, 3, 2.5))
+plotSPC(zz.sliced, name = NA, cex.names = 0.9, width = 0.33, max.depth = 50, color = 'stock.csum', plot.order = o, col.label = 'Cumulative SOC Stock (kg C / m^2)', lwd = 0.2, col.palette = hcl.colors(100, 'zissou1'), cex.id = 0.9)
+
+plotSPC(zz, print.id = FALSE, depth.axis = FALSE, color = NA, cex.names = 0.8, width = 0.33, max.depth = 50, plot.order = o, lwd = 0.8, add = TRUE, default.color = NA, raggedBottom = FALSE)
+
+for(i in 1:4) {
+  .x <- o
+  .y <- zz[, i, .TOP] + 3
+  .labs <- sprintf("%0.2f%%", zz[, i]$soc)
+  text(x = 1:length(zz), y = .y[o], labels = .labs[o], font = 2, cex = 0.95)
+  
+}
+
+axis(side = 1, at = 1:length(zz.sliced), labels = round(zz.sliced$SOC.stock[o], 1), line = 0.25)
+mtext('SOC Stock 0-50cm (kg / m^2)', side = 1, line = 2.5, font = 2, cex = 1)
+```
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 4
+#| fig-dpi: 120
+
+## view distributions by horizon
+
+h <- horizons(z)
+
+hz.name <- c('Ap', 'AB', 'E', 'Bt', 'BC', 'C')
+h$name <- factor(h$name, levels = rev(c('Ap', 'AB', 'E', 'Bt', 'BC', 'C')))
+
+
+bwplot(
+  name ~ soc, 
+  data = h, 
+  par.settings = tactile.theme(), 
+  xlab = 'Soil Organic Carbon (%)', 
+  scales = list(x = list(tick.number = 10)),
+  panel = function(...) {
+    panel.grid(-1, -1)
+    panel.bwplot(...)
+  }
+)
+
+bwplot(
+  name ~ thick, 
+  data = h, 
+  par.settings = tactile.theme(), 
+  xlab = 'Horizon Thickness (cm)', 
+  scales = list(x = list(tick.number = 10)),
+  panel = function(...) {
+    panel.grid(-1, -1)
+    panel.bwplot(...)
+  })
+
+
+bwplot(
+  name ~ Db, 
+  data = h, 
+  par.settings = tactile.theme(), 
+  xlab = 'Bulk Density (g / cm^3)', 
+  scales = list(x = list(tick.number = 10)),
+  panel = function(...) {
+    panel.grid(-1, -1)
+    panel.bwplot(...)
+  })
+
+
+bwplot(
+  name ~ fragvol, 
+  data = h, 
+  par.settings = tactile.theme(), 
+  xlab = 'Rock Fragment Volume (%)', 
+  scales = list(x = list(tick.number = 10)),
+  panel = function(...) {
+    panel.grid(-1, -1)
+    panel.bwplot(...)
+  }
+)
+
+
+bwplot(
+  name ~ stock, 
+  data = h, 
+  par.settings = tactile.theme(), 
+  xlab = 'SOC Stock (kg C / m^2)', 
+  scales = list(x = list(tick.number = 10)),
+  panel = function(...) {
+    panel.grid(-1, -1)
+    panel.bwplot(...)
+  }
+)
+```
+
+
+
+
+```{r}
+#| fig-width: 11
+#| fig-height: 5
+
+## all data
+
+o <- order(z$SOC.stock)
+
+
+par(mar = c(0.5, 0, 0, 2.5))
+
+plotSPC(z, name = NA, print.id = FALSE, cex.names = 0.85, width = 0.45, max.depth = 150, plot.order = o, lwd = 0, raggedBottom = FALSE)
+title('Simulation', line = -2)
+
+
+
+par(mar = c(0.5, 0, 3, 2.5))
+
+.p <- hcl.colors(100, 'zissou1', rev = FALSE)
+.cols <- colorRampPalette(.p, bias = 2)(20)
+
+plotSPC(z, name = NA, print.id = FALSE, cex.names = 0.85, width = 0.45, max.depth = 150, color = 'stock', plot.order = o, lwd = 0, raggedBottom = FALSE, col.label = 'SOC Stock (kg C / m^2)', col.palette = .cols)
+
+
+.cols <- colorRampPalette(.p, bias = 0.8)(20)
+
+plotSPC(z, name = NA, print.id = FALSE, cex.names = 0.85, width = 0.45, max.depth = 150, color = 'stock.csum', plot.order = o, lwd = 0, raggedBottom = FALSE, col.label = 'Cumulative SOC Stock (kg C / m^2)', col.palette = .cols)
+
+segments(x0 = 0, y0 = 100, x1 = length(z) + 1, y1 = 100, lty = 2, lwd = 2)
+```
+
+
+```{r}
+#| fig-width: 12
+#| fig-height: 6
+
+## truncate to 100cm
+z.100 <- trunc(z, 0, 100)
+
+# re-calc
+z.100$stock.csum <- profileApply(z.100, function(i) {
+  cumsum(i$stock)
+})
+
+z.100$SOC.stock <- profileApply(z.100, function(i) {
+  sum(i$stock)
+})
+
+
+
+agg <- slab(z.100, fm = ~ soc + Db + fragvol + stock)
+
+agg$mid <- (agg$bottom + agg$top) / 2
+
+agg$variable <- factor(
+  agg$variable, 
+  levels = c('soc', 'Db', 'fragvol', 'stock'), 
+  labels = c('SOC Concentration (%)', 'Bulk Density (g/cm^3)', 'Fragment Volume (%)', 'SOC Stock (kg C / m^2)')
+)
+
+tps <- tactile.theme(
+  superpose.line = list(col = 'royalblue', lwd = 3)
+)
+
+p1 <- xyplot(mid ~ p.q50 | variable, data = agg, 
+             ylab='Depth',
+             xlab='median bounded by 5th and 95th percentiles',
+             lower = agg$p.q5, upper = agg$p.q95, 
+             ylim = c(100, 0),
+             panel = panel.depth_function,
+             prepanel = prepanel.depth_function,
+             sync.colors = TRUE,
+             alpha = 0.2,
+             layout = c(4, 1),
+             scales=list(x = list(alternating = 3, relation = 'free'), y = list(tick.number = 8)),
+             par.settings = tps
+)
+
+p1 + 
+  latticeExtra::layer(panel.abline(h = 0, lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 1, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 2, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 3, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 4, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 5, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 6, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33)))
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+#| fig-dpi: 120
+
+agg <- slab(z.100, fm = ~ stock + stock.csum)
+
+agg$mid <- (agg$bottom + agg$top) / 2
+
+agg$variable <- factor(
+  agg$variable, 
+  levels = c('stock', 'stock.csum'), 
+  labels = c('SOC Stock (kg C / m^2)', 'Cumulative SOC Stock (kg C / m^2)')
+)
+
+tps <- tactile.theme(
+  superpose.line = list(col = 'royalblue', lwd = 3)
+)
+
+p2 <- xyplot(mid ~ p.q50 | variable, data = agg, 
+             ylab='Depth',
+             xlab='median bounded by 5th and 95th percentiles',
+             lower = agg$p.q5, upper = agg$p.q95, 
+             ylim = c(105, -5),
+             panel = panel.depth_function,
+             prepanel = prepanel.depth_function,
+             sync.colors = TRUE,
+             alpha = 0.2,
+             asp = 1.8,
+             scales=list(x = list(alternating = 3), y = list(tick.number = 8)),
+             par.settings = tps
+)
+
+p2 + 
+  latticeExtra::layer(panel.abline(h = 0, lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 1, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 2, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 3, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 4, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 5, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33))) +
+  latticeExtra::layer(panel.abline(h = median(z[, 6, .BOTTOM]), lwd = 2, col = rgb(0.8, 0, 0, alpha = 0.33)))
+
+```
+
+
+```{r}
+#| fig-width: 6
+#| fig-height: 4
+
+## totals
+round(quantile(z.100$SOC.stock, probs = c(0.05, 0.5, 0.95)))
+
+histogram(
+  ~ SOC.stock, 
+  data = site(z.100), 
+  breaks = 35, 
+  par.settings = tactile.theme(), 
+  scales = list(x = list(tick.number = 20)),
+  main = 'SOC Stock Simulation Summary',
+  xlab = 'SOC Stock (kg C / m^2)',
+  panel = function(...) {
+    panel.grid(-1, -1)
+    panel.histogram(...)
+    panel.abline(v = quantile(z$SOC.stock, probs = c(0.05, 0.5, 0.95)), col = 2, lwd = c(1, 2, 1))
+  }
+)
+
+## tabulate over a couple of intervals
+a <- slab(z.100, ~ stock + stock.csum, slab.structure = c(0, 10, 30, 100))
+
+# format
+a$interval <- sprintf("%0.1f [%0.1f-%0.1f]", a$p.q50, a$p.q5, a$p.q95)
+
+# median
+knitr::kable(
+  dcast(a, top + bottom ~ variable, value.var = 'p.q50'),
+  digits = 2
+)
+
+# interval
+knitr::kable(
+  dcast(a, top + bottom ~ variable, value.var = 'interval'),
+  digits = 2, align = c('r', 'r', 'c', 'c')
+)
+
+
+```
+
