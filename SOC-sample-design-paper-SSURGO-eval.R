@@ -59,6 +59,10 @@ mu <- mukey.wcs(aoi = x, db = 'gssurgo')
 # extract mukeys / RAT for thematic mapping
 rat <- cats(mu)[[1]]
 
+# TODO: annoying
+# set mukey to integer
+rat$mukey <- as.integer(rat$mukey)
+
 # check:
 plot(mu, col = viridis(100))
 
@@ -68,12 +72,12 @@ plot(mu, col = viridis(100))
 # sand, silt, clay (RV)
 p <-  get_SDA_property(property = c("sandtotal_r","silttotal_r","claytotal_r"),
                        method = "Dominant Component (Numeric)", 
-                       mukeys = as.integer(rat$mukey),
+                       mukeys = rat$mukey,
                        top_depth = 0,
                        bottom_depth = 25)
 
 head(p)
-
+str(p)
 
 cn <-  get_SDA_property(property = c("compname"),
                        method = "Dominant Component (Category)", 
@@ -86,6 +90,9 @@ rat <- merge(rat, p, by.x = 'mukey', by.y = 'mukey', sort = FALSE, all.x = TRUE)
 # add compname
 rat <- merge(rat, cn[, c('mukey', 'compname')], by.x = 'mukey', by.y = 'mukey', sort = FALSE, all.x = TRUE)
 
+# TODO: annoying that base::merge() re-orders
+#       mukey is a character inherited from rat
+
 # re-pack RAT
 levels(mu) <- rat
 
@@ -95,7 +102,7 @@ mu.data <- catalyze(mu)
 
 
 ## categorical data
-activeCat(mu) <- 9
+activeCat(mu) <- 8
 
 col.set <- RColorBrewer::brewer.pal(9, 'Set1')
 cols <- colorRampPalette(col.set, space = 'Lab', interpolate = 'spline')(50)
@@ -177,8 +184,7 @@ SoilTaxonomyDendrogram(
   cex.names = 0.66,
   width = 0.3, 
   name.style = 'center-center', 
-  plot.depth.axis = TRUE,
-  axis.line.offset = -3.5,
+  depth.axis = list(line = -3.5),
   hz.distinctness.offset = 'hzd'
 )
 
@@ -192,8 +198,7 @@ SoilTaxonomyDendrogram(
   cex.names = 0.75,
   width = 0.3, 
   name.style = 'center-center', 
-  plot.depth.axis = TRUE,
-  axis.line.offset = -3.5,
+  depth.axis = list(line = -3.5),
   hz.distinctness.offset = 'hzd'
 )
 
@@ -207,8 +212,7 @@ SoilTaxonomyDendrogram(
   cex.names = 0.75,
   width = 0.3, 
   name.style = 'center-center', 
-  plot.depth.axis = TRUE,
-  axis.line.offset = -3.5,
+  depth.axis = list(line = -3.5),
   hz.distinctness.offset = 'hzd'
 )
 
@@ -240,7 +244,7 @@ plotProfileDendrogram(
   scaling.factor = 0.01,
   width = 0.3,
   name.style = 'center-center',
-  plot.depth.axis = FALSE,
+  depth.axis = FALSE,
   hz.depths = TRUE,
   hz.distinctness.offset = 'hzd',
   cex.names = 0.6,
@@ -273,7 +277,7 @@ plotProfileDendrogram(
   scaling.factor = 0.01, 
   width = 0.3, 
   name.style = 'center-center', 
-  plot.depth.axis = FALSE, 
+  depth.axis = FALSE, 
   hz.depths = TRUE, 
   hz.distinctness.offset = 'hzd', 
   cex.names = 0.6, 
