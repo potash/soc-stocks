@@ -1,0 +1,344 @@
+---
+title: "SSURGO SOC uncertainty"
+output:
+  html_document:
+    df_print: paged
+---
+# Collect soil series to work with
+
+We start with Drummer and get all of the competing and geographically associated series
+```{r setup}
+library(tidyverse)
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+
+```{r series}
+series = "Drummer"
+osd = soilDB::fetchOSD(series, extended=T)
+```
+
+```{r}
+osd$competing$competing
+osd$geog_assoc_soils$gas
+```
+
+# Download all pedons from KSSL
+
+```{r}
+kssl = soilDB::fetchKSSL(series=c(series, 
+                                  osd$competing$competing,
+                                  osd$geog_assoc_soils$gas))
+```
+
+We have `r nrow(kssl@site)` pedons with an average of `r round(nrow(kssl@horizons)/nrow(kssl@site))` horizons each.
+
+# Examine the top horizon for thickness, SOC, bulk density, fragment volume
+
+```{r}
+kssl@horizons %>%
+  #inner_join(kssl@site) %>%
+  #filter(taxonname == "Drummer") %>%
+  filter(hzn_top == 0) %>%
+  pivot_longer(c(estimated_oc, db_13b, hzn_bot, frags)) %>%
+  group_by(name) %>%
+  mutate(name = sprintf("%s (n= %s)", name, sum(!is.na(value)))) %>%
+  ggplot(aes(value)) +
+  geom_density() +
+  facet_wrap(~name, scales="free")
+```
+
+# Restrict to pedons with bulk density down to 100cm
+
+```{r}
+get_stock_cum = function(kssl, depth) {
+  kssl_oc_stock = kssl@horizons %>%
+    filter(hzn_top < depth) %>%
+    arrange(pedon_key, hzn_top) %>%
+    group_by(pedon_key) %>%
+    mutate(hzn_bot_temp = pmin(hzn_bot, depth), 
+           thickness_temp = hzn_bot_temp - hzn_top,
+           .after=hzn_bot) %>%
+    summarize(stock_cum = sum(db_13b*thickness_temp*estimated_oc),
+              dbthirdbar_cum = weighted.mean(db_13b, thickness_temp),
+              oc_cum = stock_cum/dbthirdbar_cum/depth) %>%
+    filter(!is.na(stock_cum))
+}
+
+kssl_oc_stock = get_stock_cum(kssl, 100)
+```
+
+```{r}
+kssl_oc_stock %>%
+  ggplot(aes(stock_cum)) +
+  geom_density()
+```
+
+
+
+# Get corresponding SSURGO chorizons
+
+Start by finding a cokey for each pedon based on survey area and component name
+
+```{r}
+kssl_sf = kssl@site %>%
+  inner_join(kssl_oc_stock) %>%
+  select(pedon_key, x, y) %>%
+  filter(!is.na(x) & !is.na(y)) %>%
+  sf::st_as_sf(coords=c("x", "y"), crs=4326)
+
+kssl_areasymbol = soilDB::SDA_spatialQuery(kssl_sf, what="areasymbol", 
+                                           byFeature=TRUE,
+                                           idcol="pedon_key")
+
+pedon_query_data =  sf::st_drop_geometry(kssl_sf) %>%
+  bind_cols(kssl_areasymbol %>% select(areasymbol)) %>%
+  inner_join(kssl@site %>% select(pedon_key, taxonname)) %>%
+  mutate(areasymbol_taxonname = toupper(paste0(areasymbol, taxonname)))
+
+cokeys = soilDB::SDA_query(sprintf(
+"select m.mukey, muname, c.cokey, compname, areasymbol, mlraoffice, substring(areasymbol, 1, 2) as state
+From mapunit m
+inner join component c on m.mukey = c.mukey
+inner join legend l on m.lkey = l.lkey
+where majcompflag = 'Yes' and 
+upper(areasymbol + compname) IN %s and
+mukind='Consociation'", soilDB::format_SQL_in_statement(pedon_query_data$areasymbol_taxonname)))
+
+pedon_cokeys = cokeys %>%
+  mutate(areasymbol_taxonname = toupper(paste0(areasymbol, compname))) %>%
+  group_by(areasymbol, compname) %>%
+  arrange(!grepl("stream terrace", muname)) %>% # don't use stream terrace map units unless necessary
+  slice(1) %>%
+  select(cokey, areasymbol_taxonname) %>%
+  ungroup %>%
+  inner_join(pedon_query_data) %>% 
+  select(pedon_key, cokey)
+```
+
+
+Finally load the SSURGO data
+
+```{r}
+SSURGO_chorizons = soilDB::SDA_query(sprintf(
+"select * from chorizon 
+where cokey IN %s", soilDB::format_SQL_in_statement(unique(pedon_cokeys$cokey))))
+```
+
+```{r}
+SSURGO_chfrags = soilDB::SDA_query(sprintf(
+"select * from chfrags 
+where chkey IN %s", soilDB::format_SQL_in_statement(unique(SSURGO_chorizons$chkey))))
+
+SSURGO_chfrags_summary = SSURGO_chfrags %>%
+  group_by(chkey) %>%
+  summarize(across(starts_with("fragvol"), sum))
+```
+
+
+# SSURGO prediction intervals
+
+What does SSURGO predict for SOC%, bulk density, and SOC stock for each of our top horizons? Need to aggregate SSURGO:
+
+```{r}
+SSURGO_expanded = SSURGO_chorizons %>%
+  left_join(SSURGO_chfrags_summary) %>%
+  nest_by(cokey, chkey) %>%
+  mutate(cms = list(tibble(cm=(data$hzdept_r+1):data$hzdepb_r))) %>%
+  unnest() %>%
+  arrange(cokey, cm) %>%
+  mutate(oc_r = om_r*0.58,
+         oc_l = om_l*0.58,
+         oc_h = om_h*0.58) %>%
+  mutate(stock_r = oc_r*dbthirdbar_r,
+         stock_l = oc_l*dbthirdbar_r,
+         stock_h = oc_h*dbthirdbar_r)
+```
+
+
+```{r}
+SSURGO_expanded %>%
+  ungroup %>%
+  filter(cokey %in% sample(cokey, 5)) %>%
+  pivot_longer(matches("^(stock|oc|dbthirdbar|fragvol)_"),
+               names_to=c("name", "stat"),
+               names_pattern="(.*)_(.*)") %>%
+  pivot_wider(names_from=stat, values_from=value) %>%
+  ggplot(aes(y=r, x=-cm)) +
+  geom_ribbon(aes(ymin=l, ymax=h), alpha=0.25) +
+  geom_line() +
+  facet_grid(cokey~name, scales="free") +
+  coord_flip() +
+  xlab("value")
+```
+
+```{r}
+SSURGO_expanded_cum = SSURGO_expanded %>%
+  group_by(cokey) %>%
+  arrange(cm) %>%
+  mutate(stock_cum_r = cumsum(stock_r),
+         stock_cum_l = cumsum(stock_l),
+         stock_cum_h = cumsum(stock_h),
+         dbthirdbar_cum_r = cumsum(dbthirdbar_r)/cm,
+         dbthirdbar_cum_l = cumsum(dbthirdbar_l)/cm,
+         dbthirdbar_cum_h = cumsum(dbthirdbar_h)/cm,
+         oc_cum_r = stock_cum_r / dbthirdbar_cum_r/cm,
+         oc_cum_l = stock_cum_l / dbthirdbar_cum_l/cm,
+         oc_cum_h = stock_cum_h / dbthirdbar_cum_h/cm
+         )
+
+df_temp = kssl@horizons %>%
+  group_by(pedon_key) %>%
+  arrange(hzn_top) %>%
+  mutate(stock=estimated_oc*0.58*db_13b,
+         dbthirdbar_cum = cumsum(db_13b*(hzn_bot-hzn_top))/hzn_bot,
+         stock_cum = cumsum(stock*(hzn_bot-hzn_top)),
+         oc_cum = stock_cum/dbthirdbar_cum/hzn_bot,
+         cm = hzn_bot) %>%
+  select(pedon_key, cm, dbthirdbar_cum, stock_cum, oc_cum) %>%
+  filter(!is.na(dbthirdbar_cum) & !is.na(stock_cum))
+
+cokeys_popular = pedon_cokeys %>%
+  inner_join(df_temp) %>%
+  group_by(cokey) %>%
+  summarize(n=n()) %>%
+  arrange(-n) %>%
+  head(4) %>%
+  pull(cokey)
+
+
+cumulative_plot = SSURGO_expanded_cum %>%
+  ungroup %>%
+  filter(cokey %in% cokeys_popular) %>%
+  select(cokey, cm, matches("^(oc_cum|dbthirdbar_cum|stock_cum)_")) %>%
+  pivot_longer(matches("^(oc_cum|dbthirdbar_cum|stock_cum)_"),
+               names_to=c("name", "stat"),
+               names_pattern="(.*)_(.*)") %>%
+  pivot_wider(names_from=stat, values_from=value) %>%
+  ggplot(aes(y=r, x=-cm)) +
+  geom_ribbon(aes(ymin=l, ymax=h), alpha=0.25) +
+  geom_line() +
+  facet_grid(cokey~name, scales="free") +
+  coord_flip() +
+  xlab("value")
+
+cumulative_plot
+```
+
+```{r}
+cumulative_plot +
+  geom_point(data=df_temp %>% 
+               inner_join(pedon_cokeys) %>%
+               filter(cokey %in% cokeys_popular) %>%
+               pivot_longer(c(dbthirdbar_cum, stock_cum, oc_cum)),
+             mapping=aes(-cm, value))
+```
+
+```{r}
+kssl_oc_stock_cokeys = kssl_oc_stock %>%
+  inner_join(pedon_cokeys) %>%
+  pull(cokey) %>%
+  unique
+
+properties = c("dbthirdbar", "om", "hzdepb")
+
+p_colnames = expand_grid(p=properties,
+            suffix=c('l','r', 'h')) %>%
+  mutate(colname = paste0(p, "_", suffix))
+
+p_stats = SSURGO_chorizons %>%
+  filter(cokey %in% kssl_oc_stock_cokeys) %>%
+  select(cokey, chkey, p_colnames$colname) %>%
+  pivot_longer(cols=c(-chkey, -cokey),
+               names_to=c("p", "stat"),
+               names_pattern="(.*)_(.*)") %>%
+  pivot_wider(names_from=stat, values_from=value)
+
+p_summaries = p_stats %>%
+  transmute(cokey, chkey, p, mean = r, sd = (h - l)/(qnorm(0.95) - qnorm(0.05)) ) %>%
+  mutate(sd = coalesce(sd, 0)) %>%
+  group_by(cokey, chkey) %>%
+  filter(!any(is.na(mean)))# %>%
+  #mutate(sd = ifelse(p == "hzdepb", 0, sd))
+
+# 3. simulate
+p_sims = p_summaries %>%
+  inner_join(pedon_cokeys, relationship="many-to-many") %>%
+  expand_grid(sim_id = 1:100) %>%
+  mutate(value = pmax(0,rnorm(n(), mean=mean, sd=sd))) %>%
+  select(sim_id, pedon_key, chkey, p, value) %>%
+  #arrange(sim_id, pedon_key, chkey, p, value) %>%
+  pivot_wider(names_from=p, values_from=value)
+
+p_sims_cm = p_sims %>%
+  mutate(hzdepb = pmax(1,as.integer(hzdepb))) %>%
+  arrange(sim_id, hzdepb) %>%
+  group_by(pedon_key, sim_id) %>%
+  mutate(hzdept = coalesce(lag(hzdepb), 1),
+         oc = om*0.58,
+         stock = dbthirdbar*oc) %>%
+  ungroup %>%
+  nest_by(pedon_key, sim_id, chkey) %>%
+  mutate(cms = list(tibble(
+    cm=data$hzdept:(data$hzdepb-1)))) %>%
+  unnest() %>%
+  arrange(pedon_key, sim_id, cm) %>%
+  group_by(pedon_key, sim_id) %>%
+  mutate(stock_cum = cumsum(stock),
+         dbthirdbar_cum = cumsum(dbthirdbar)/cm,
+         oc_cum = stock_cum/dbthirdbar_cum/cm)
+```
+
+```{r}
+p_sims_cm %>%
+  # just get one for each cokey
+  inner_join(pedon_cokeys %>% group_by(cokey) %>% slice(1)) %>% 
+  filter(cokey %in% cokeys_popular) %>%
+  pivot_longer(c(dbthirdbar_cum, oc_cum, stock_cum)) %>%
+  group_by(cokey, cm, name) %>%
+  summarize(r=median(value), 
+            l=quantile(value, 0.05),
+            h=quantile(value, 0.95)) %>%
+  ggplot(aes(y=r, x=-cm)) +
+  geom_ribbon(aes(ymin=l, ymax=h), alpha=0.25) +
+  geom_line() +
+  facet_grid(cokey~name, scales="free") +
+  coord_flip() +
+  xlab("value")
+```
+
+```{r}
+calibration_data_simple = SSURGO_expanded_cum %>%
+  filter(cm == 100) %>%
+  inner_join(pedon_cokeys) %>%
+  inner_join(kssl_oc_stock, by="pedon_key") %>%
+  mutate(name="simple")
+
+calibration_data_sim = p_sims_cm %>%
+  filter(cm == 100) %>%
+  group_by(pedon_key) %>%
+  summarize(stock_cum_r = median(stock_cum),
+            stock_cum_l = quantile(stock_cum, 0.05),
+            stock_cum_h = quantile(stock_cum, 0.95)) %>%
+  filter(pedon_key %in% kssl_oc_stock$pedon_key) %>%
+  inner_join(kssl_oc_stock, by="pedon_key") %>%
+  mutate(name="sim")
+
+bind_rows(calibration_data_simple, calibration_data_sim) %>%
+  ggplot(aes(stock_cum, stock_cum_r)) +
+  geom_point(alpha=0.5) +
+  geom_errorbar(aes(ymin=stock_cum_l, ymax=stock_cum_h), alpha=0.5) +
+  geom_abline() +
+  coord_fixed() +
+  facet_wrap(~name) +
+  xlab("KSSL measured 100cm SOC stock (Mg/ha)") +
+  ylab("SSURGO estimated SOC stock")
+```
+
+```{r}
+bind_rows(calibration_data_simple, calibration_data_sim) %>%
+  mutate(cover=stock_cum_l < stock_cum & stock_cum < stock_cum_h) %>%
+  group_by(name) %>%
+  summarize(coverage=mean(cover),
+            width = mean((stock_cum_h - stock_cum_l)/stock_cum_r/2 ))
+```
